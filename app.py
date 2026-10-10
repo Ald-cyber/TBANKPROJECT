@@ -37,7 +37,7 @@ def load():
     if "price_mln" not in df.columns and "price_rub" in df.columns:
         df["price_mln"] = df["price_rub"] / 1_000_000
 
-    if "price_per_sqm" not in df.columns:
+    if "price_per_sqm" not in df.columns and "price_rub" in df.columns and "total_area" in df.columns:
         df["price_per_sqm"] = df["price_rub"] / df["total_area"]
 
     df = df.loc[:, ~df.columns.duplicated()]
@@ -87,7 +87,7 @@ with st.sidebar:
             price_range = st.slider(
                 "Цена, млн ₽",
                 pmin, pmax,
-                (pmin, min(pmax, 30.0)),
+                (pmin, pmax),
                 step=0.5,
             )
 
@@ -99,7 +99,7 @@ with st.sidebar:
             sqm_range = st.slider(
                 "₽ за м²",
                 s_min, s_max,
-                (s_min, min(s_max, 400_000)),
+                (s_min, s_max),
                 step=1000,
             )
 
@@ -117,7 +117,7 @@ with st.sidebar:
             area_range = st.slider(
                 "Площадь, м²",
                 a_min, a_max,
-                (a_min, min(a_max, 150.0)),
+                (a_min, a_max),
                 step=1.0,
             )
 
@@ -139,7 +139,7 @@ with st.sidebar:
     if "metro_distance_min" in df.columns and df["metro_distance_min"].notna().any():
         m_max = int(np.nanmax(df["metro_distance_min"]))
         if m_max > 0:
-            metro_max = st.slider("До метро, мин", 0, min(m_max, 60), min(m_max, 30))
+            metro_max = st.slider("До метро, мин", 0, m_max, m_max)
 
     year_range = None
     if "completion_year" in df.columns and df["completion_year"].notna().any():
@@ -161,7 +161,7 @@ with st.sidebar:
         sel_finish = []
 
     only_mortgage = st.checkbox("Только со льготной ипотекой", value=False)
-    only_geo = st.checkbox("Только с координатами на карте", value=True)
+    only_geo = st.checkbox("Только с координатами на карте", value=False)
 
 
 f = df.copy()
@@ -227,10 +227,11 @@ tab_map, tab_table, tab_stats = st.tabs(["🗺 Карта", "📋 Таблица
 
 
 with tab_map:
-    if len(f) == 0:
-        st.warning("Нет объектов под текущие фильтры")
+    geo = f.dropna(subset=["lat", "lon"])
+    if len(geo) == 0:
+        st.warning("Нет объектов с координатами под текущие фильтры")
     else:
-        center = [f["lat"].mean(), f["lon"].mean()]
+        center = [geo["lat"].mean(), geo["lon"].mean()]
         m = folium.Map(location=center, zoom_start=10, tiles="OpenStreetMap")
         cluster = MarkerCluster().add_to(m)
 
@@ -240,7 +241,7 @@ with tab_map:
             "бизнес": "green", "элит": "red",
         }
 
-        for _, r in f.iterrows():
+        for _, r in geo.iterrows():
             cls = str(r.get("complex_class", "")).lower()
             color = colors.get(cls, "purple")
 
