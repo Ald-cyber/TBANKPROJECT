@@ -24,6 +24,7 @@ st.markdown("""
 }
 .zhk-card:hover {
     box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+    border-color: #cfd8ff;
 }
 .zhk-title {
     font-size: 22px;
@@ -107,12 +108,17 @@ if df.empty:
     st.error("Файл production_data_merged.csv пуст или не найден.")
     st.stop()
 
+# ---------- session state ----------
 if "favorites" not in st.session_state:
     st.session_state.favorites = set()
 if "selected_zhk" not in st.session_state:
     st.session_state.selected_zhk = None
 if "card_page" not in st.session_state:
     st.session_state.card_page = 1
+if "active_tab" not in st.session_state:
+    st.session_state.active_tab = "🏠 Карточки"
+if "last_clicked_marker_id" not in st.session_state:
+    st.session_state.last_clicked_marker_id = None
 
 
 def toggle_fav(zhk_id):
@@ -123,7 +129,9 @@ def toggle_fav(zhk_id):
 
 
 def open_card(zhk_id):
+    """Открыть карточку и переключиться на вкладку '📄 Карточка'."""
     st.session_state.selected_zhk = zhk_id
+    st.session_state.active_tab = "📄 Карточка"
 
 
 def reset_filters():
@@ -153,7 +161,6 @@ def fmt_metro(row):
     return f"{name} · {int(dist)} мин"
 
 
-# --- Глобальный максимум по метро для определения активности фильтра ---
 METRO_MAX_REAL = (
     int(np.nanmax(df["metro_distance_min"]))
     if "metro_distance_min" in df.columns and df["metro_distance_min"].notna().any()
@@ -161,6 +168,7 @@ METRO_MAX_REAL = (
 )
 
 
+# ======================== SIDEBAR ========================
 with st.sidebar:
     st.header("🔍 Фильтры")
     st.button("♻️ Сбросить фильтры", on_click=reset_filters, use_container_width=True)
@@ -275,10 +283,13 @@ with st.sidebar:
     )
 
     only_mortgage = st.checkbox(
-        "Только со льготной ипотекой", value=False, key="flt_mortgage",
+        "Только со льготной ипотекой",
+        value=st.session_state.get("flt_mortgage", False),
+        key="flt_mortgage",
     )
 
 
+# ======================== FILTERING ========================
 f = df.copy()
 
 if sel_cities:
@@ -299,19 +310,16 @@ if "floor" in f.columns:
 if "total_area" in f.columns and area_from > 0:
     f = f[(f["total_area"] >= area_from) | f["total_area"].isna()]
 
-# --- Фильтр по метро: объекты без метро исключаются, если фильтр активен ---
 if "metro_distance_min" in f.columns:
     m_max_real = METRO_MAX_REAL
     metro_filter_active = (metro_from > 0) or (metro_to < m_max_real)
 
     if metro_filter_active:
-        # Пользователь сузил диапазон — объекты без метро (NaN) исключаем
         f = f[
             f["metro_distance_min"].notna() &
             f["metro_distance_min"].between(metro_from, metro_to)
         ]
     else:
-        # Фильтр не задан — показываем всё, включая объекты без метро
         f = f[
             f["metro_distance_min"].between(metro_from, metro_to) |
             f["metro_distance_min"].isna()
@@ -323,7 +331,8 @@ if only_mortgage and "mortgage_allowed" in f.columns:
 f = f.reset_index(drop=True)
 
 
-def render_card(row, key_prefix, full=False, show_open_button=True):
+# ======================== RENDER CARD ========================
+def render_card(row, key_prefix, full=False):
     zhk_id = str(row["id"])
     is_fav = zhk_id in st.session_state.favorites
 
@@ -349,6 +358,16 @@ def render_card(row, key_prefix, full=False, show_open_button=True):
             </div>
         </div>
         """, unsafe_allow_html=True)
+
+        # Кнопка перехода к полной карточке
+        if not full:
+            if st.button(
+                "📄 Открыть подробную карточку",
+                key=f"{key_prefix}_openbtn_{zhk_id}",
+                use_container_width=True,
+            ):
+                open_card(zhk_id)
+                st.rerun()
 
         if full:
             fields = [
@@ -388,19 +407,34 @@ def render_card(row, key_prefix, full=False, show_open_button=True):
             st.rerun()
 
 
+# ======================== NAVIGATION ========================
+TAB_LABELS = ["🏠 Карточки", "🗺 Карта", "📄 Карточка", "❤ Избранное", "📊 Аналитика"]
 
-tab_cards, tab_map, tab_card, tab_fav, tab_stats = st.tabs(
-    [
-        "🏠 Карточки",
-        "🗺 Карта",
-        "📄 Карточка",
-        f"❤ Избранное ({len(st.session_state.favorites)})",
-        "📊 Аналитика",
-    ]
+# Проверка, что активная вкладка валидна
+if st.session_state.active_tab not in TAB_LABELS:
+    st.session_state.active_tab = "🏠 Карточки"
+
+active_index = TAB_LABELS.index(st.session_state.active_tab)
+
+# ВАЖНО: без key у radio, чтобы управлять значением через index.
+# Если пользователь кликнул вручную — вернётся новое значение,
+# и мы обновим active_tab.
+selected_tab = st.radio(
+    "Навигация",
+    TAB_LABELS,
+    index=active_index,
+    horizontal=True,
+    label_visibility="collapsed",
 )
 
+if selected_tab != st.session_state.active_tab:
+    st.session_state.active_tab = selected_tab
 
-with tab_cards:
+active_tab = st.session_state.active_tab
+
+
+# ======================== TAB: КАРТОЧКИ ========================
+if active_tab == "🏠 Карточки":
     st.markdown(f"### Найдено: **{len(f)}** из {len(df)} ЖК")
 
     if len(f) == 0:
@@ -443,7 +477,8 @@ with tab_cards:
             )
 
 
-with tab_map:
+# ======================== TAB: КАРТА ========================
+elif active_tab == "🗺 Карта":
     geo = f.dropna(subset=["lat", "lon"]) if "lat" in f.columns else pd.DataFrame()
     if len(geo) == 0:
         st.warning("Нет объектов с координатами под текущие фильтры")
@@ -459,6 +494,11 @@ with tab_map:
             "эконом": "gray", "комфорт": "blue",
             "бизнес": "green", "элит": "red",
         }
+
+        # Округляем координаты для стабильного сопоставления
+        geo = geo.copy()
+        geo["lat_r"] = geo["lat"].round(6)
+        geo["lon_r"] = geo["lon"].round(6)
 
         for _, r in geo.iterrows():
             cls = str(r.get("complex_class", "")).lower()
@@ -490,26 +530,32 @@ with tab_map:
             returned_objects=["last_object_clicked"],
         )
 
+        # Обработка клика по маркеру
         if map_data and map_data.get("last_object_clicked"):
             clicked = map_data["last_object_clicked"]
             clat, clon = clicked.get("lat"), clicked.get("lng")
             if clat is not None and clon is not None:
                 match = geo[
-                    (geo["lat"].round(6) == round(clat, 6)) &
-                    (geo["lon"].round(6) == round(clon, 6))
+                    (geo["lat_r"] == round(clat, 6)) &
+                    (geo["lon_r"] == round(clon, 6))
                 ]
                 if len(match) > 0:
                     new_id = str(match.iloc[0]["id"])
-                    if st.session_state.selected_zhk != new_id:
+                    # Проверяем, не обрабатывали ли мы уже этот клик
+                    click_signature = f"{new_id}_{clat}_{clon}"
+                    if st.session_state.last_clicked_marker_id != click_signature:
+                        st.session_state.last_clicked_marker_id = click_signature
                         st.session_state.selected_zhk = new_id
+                        st.session_state.active_tab = "📄 Карточка"
                         st.rerun()
 
 
-with tab_card:
+# ======================== TAB: КАРТОЧКА ========================
+elif active_tab == "📄 Карточка":
     sel_id = st.session_state.selected_zhk
     if not sel_id:
         st.info(
-            "Кликни по маркеру на карте или нажми «📄 Карточка» в списке — "
+            "Кликни по маркеру на карте или нажми «📄 Открыть подробную карточку» в списке — "
             "здесь появится подробная информация о ЖК."
         )
     else:
@@ -519,14 +565,16 @@ with tab_card:
         else:
             row = row_match.iloc[0]
             st.markdown(f"## {row.get('complex_name', '—')}")
-            render_card(row, key_prefix=f"full_{sel_id}", full=True, show_open_button=False)
+            render_card(row, key_prefix=f"full_{sel_id}", full=True)
             st.markdown("---")
             if st.button("← Вернуться к списку"):
                 st.session_state.selected_zhk = None
+                st.session_state.active_tab = "🏠 Карточки"
                 st.rerun()
 
 
-with tab_fav:
+# ======================== TAB: ИЗБРАННОЕ ========================
+elif active_tab == "❤ Избранное":
     fav_ids = st.session_state.favorites
     if not fav_ids:
         st.info("Ты ещё не добавил ни одной новостройки в избранное.")
@@ -542,7 +590,8 @@ with tab_fav:
             render_card(row, key_prefix=f"fav_{idx}")
 
 
-with tab_stats:
+# ======================== TAB: АНАЛИТИКА ========================
+elif active_tab == "📊 Аналитика":
     if len(f) == 0:
         st.warning("Нет данных для аналитики")
     else:
