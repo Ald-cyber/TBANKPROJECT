@@ -1,229 +1,355 @@
 import streamlit as st
 import pandas as pd
-import folium
-from folium.plugins import MarkerCluster, HeatMap
-from streamlit_folium import st_folium
 import numpy as np
+import folium
+from folium.plugins import MarkerCluster
+from streamlit_folium import st_folium
+import plotly.express as px
 
-st.set_page_config(layout="wide", page_title="Витрина новостроек России")
-st.title("🏙 Витрина новостроек")
+st.set_page_config(
+    layout="wide",
+    page_title="Витрина новостроек",
+    page_icon="🏙",
+)
 
-# ---------- Загрузка ----------
+st.title("🏙 Витрина новостроек России")
+st.caption("Данные: ЦИАН + ПИК · единая витрина · фильтры · карта · аналитика")
+
+
 @st.cache_data
 def load():
     df = pd.read_csv("production_data_merged.csv")
-    df["rooms"] = pd.to_numeric(df["rooms"], errors="coerce").fillna(0).astype(int)
-    df["completion_year"] = pd.to_numeric(df["completion_year"], errors="coerce")
-    df["metro_distance_min"] = pd.to_numeric(df["metro_distance_min"], errors="coerce")
-    df["price_mln"] = pd.to_numeric(df["price_mln"], errors="coerce")
-    df["price_per_sqm"] = pd.to_numeric(df["price_per_sqm"], errors="coerce")
+
+    num_cols = [
+        "price_rub", "price_per_sqm", "price_mln",
+        "total_area", "living_area", "kitchen_area",
+        "floor", "total_floors", "ceiling_height",
+        "metro_distance_min", "completion_year", "build_year",
+        "lat", "lon", "views",
+    ]
+    for c in num_cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    if "rooms" in df.columns:
+        df["rooms"] = pd.to_numeric(df["rooms"], errors="coerce").fillna(0).astype(int)
+
+    if "price_mln" not in df.columns and "price_rub" in df.columns:
+        df["price_mln"] = df["price_rub"] / 1_000_000
+
+    if "price_per_sqm" not in df.columns:
+        df["price_per_sqm"] = df["price_rub"] / df["total_area"]
+
+    df = df.loc[:, ~df.columns.duplicated()]
+
     return df
+
 
 df = load()
 
-# ---------- Сайдбар: МНОГО фильтров ----------
+if df.empty:
+    st.error("Файл production_data_merged.csv пуст или не найден.")
+    st.stop()
+
+
 with st.sidebar:
     st.header("🔍 Фильтры")
 
-    # 1. Город
-    cities = sorted(df["city"].dropna().unique())
-    sel_cities = st.multiselect("Город", cities, default=cities[:1])
+    if "city" in df.columns:
+        cities = sorted(df["city"].dropna().unique().tolist())
+        sel_cities = st.multiselect("Город", cities, default=cities[:1] if cities else [])
+    else:
+        sel_cities = []
 
-    # 2. Источник
-    sources = sorted(df["source"].dropna().unique())
-    sel_sources = st.multiselect("Источник данных", sources, default=sources)
+    if "source" in df.columns:
+        sources = sorted(df["source"].dropna().unique().tolist())
+        sel_sources = st.multiselect("Источник данных", sources, default=sources)
+    else:
+        sel_sources = []
 
-    # 3. Застройщик
-    developers = sorted(df["developer"].dropna().unique()) if "developer" in df else []
-    sel_devs = st.multiselect("Застройщик", developers, default=[])
+    if "developer" in df.columns:
+        developers = sorted(df["developer"].dropna().unique().tolist())
+        sel_devs = st.multiselect("Застройщик", developers, default=[])
+    else:
+        sel_devs = []
 
-    # 4. Класс
-    classes = sorted(df["complex_class"].dropna().unique()) if "complex_class" in df else []
-    sel_classes = st.multiselect("Класс ЖК", classes, default=classes)
+    if "complex_class" in df.columns:
+        classes = sorted(df["complex_class"].dropna().unique().tolist())
+        sel_classes = st.multiselect("Класс ЖК", classes, default=classes)
+    else:
+        sel_classes = []
 
-    # 5. Цена
-    if df["price_mln"].notna().any():
-        pmin, pmax = float(df["price_mln"].min()), float(df["price_mln"].max())
-        price_range = st.slider("Цена, млн ₽", pmin, pmax, (pmin, min(pmax, 30.0)), step=0.5)
+    price_range = None
+    if "price_mln" in df.columns and df["price_mln"].notna().any():
+        pmin = float(np.nanmin(df["price_mln"]))
+        pmax = float(np.nanmax(df["price_mln"]))
+        if pmin < pmax:
+            price_range = st.slider(
+                "Цена, млн ₽",
+                pmin, pmax,
+                (pmin, min(pmax, 30.0)),
+                step=0.5,
+            )
 
-    # 6. Цена за м²
-    if df["price_per_sqm"].notna().any():
-        sqm_min = int(df["price_per_sqm"].min(skipna=True))
-        sqm_max = int(df["price_per_sqm"].max(skipna=True))
-        sqm_range = st.slider("₽ за м²", sqm_min, sqm_max,
-                              (sqm_min, min(sqm_max, 400_000)), step=1000)
+    sqm_range = None
+    if "price_per_sqm" in df.columns and df["price_per_sqm"].notna().any():
+        s_min = int(np.nanmin(df["price_per_sqm"]))
+        s_max = int(np.nanmax(df["price_per_sqm"]))
+        if s_min < s_max:
+            sqm_range = st.slider(
+                "₽ за м²",
+                s_min, s_max,
+                (s_min, min(s_max, 400_000)),
+                step=1000,
+            )
 
-    # 7. Комнаты
-    rooms = sorted(df["rooms"].unique())
-    sel_rooms = st.multiselect("Комнат", rooms, default=rooms)
+    if "rooms" in df.columns:
+        rooms_all = sorted(df["rooms"].dropna().unique().tolist())
+        sel_rooms = st.multiselect("Комнат", rooms_all, default=rooms_all)
+    else:
+        sel_rooms = []
 
-    # 8. Площадь
-    if df["total_area"].notna().any():
-        a_min, a_max = float(df["total_area"].min()), float(df["total_area"].max())
-        area_range = st.slider("Площадь, м²", a_min, a_max, (a_min, min(a_max, 150.0)), step=1.0)
+    area_range = None
+    if "total_area" in df.columns and df["total_area"].notna().any():
+        a_min = float(np.nanmin(df["total_area"]))
+        a_max = float(np.nanmax(df["total_area"]))
+        if a_min < a_max:
+            area_range = st.slider(
+                "Площадь, м²",
+                a_min, a_max,
+                (a_min, min(a_max, 150.0)),
+                step=1.0,
+            )
 
-    # 9. Этаж
-    if df["floor"].notna().any():
-        f_min, f_max = int(df["floor"].min()), int(df["floor"].max())
-        floor_range = st.slider("Этаж", f_min, f_max, (f_min, f_max))
+    floor_range = None
+    if "floor" in df.columns and df["floor"].notna().any():
+        f_min = int(np.nanmin(df["floor"]))
+        f_max = int(np.nanmax(df["floor"]))
+        if f_min < f_max:
+            floor_range = st.slider("Этаж", f_min, f_max, (f_min, f_max))
 
-    # 10. Этажей в доме
-    if df["total_floors"].notna().any():
-        tf_min, tf_max = int(df["total_floors"].min()), int(df["total_floors"].max())
-        tf_range = st.slider("Этажей в доме", tf_min, tf_max, (tf_min, tf_max))
+    tf_range = None
+    if "total_floors" in df.columns and df["total_floors"].notna().any():
+        tf_min = int(np.nanmin(df["total_floors"]))
+        tf_max = int(np.nanmax(df["total_floors"]))
+        if tf_min < tf_max:
+            tf_range = st.slider("Этажей в доме", tf_min, tf_max, (tf_min, tf_max))
 
-    # 11. Метро (расстояние)
-    if df["metro_distance_min"].notna().any():
-        m_max = int(df["metro_distance_min"].max(skipna=True))
-        metro_max = st.slider("До метро, мин", 0, min(m_max, 60), 30)
+    metro_max = None
+    if "metro_distance_min" in df.columns and df["metro_distance_min"].notna().any():
+        m_max = int(np.nanmax(df["metro_distance_min"]))
+        if m_max > 0:
+            metro_max = st.slider("До метро, мин", 0, min(m_max, 60), min(m_max, 30))
 
-    # 12. Год сдачи
-    if df["completion_year"].notna().any():
-        y_min = int(df["completion_year"].min(skipna=True))
-        y_max = int(df["completion_year"].max(skipna=True))
-        year_range = st.slider("Год сдачи", y_min, y_max, (y_min, y_max))
+    year_range = None
+    if "completion_year" in df.columns and df["completion_year"].notna().any():
+        y_min = int(np.nanmin(df["completion_year"]))
+        y_max = int(np.nanmax(df["completion_year"]))
+        if y_min < y_max:
+            year_range = st.slider("Год сдачи", y_min, y_max, (y_min, y_max))
 
-    # 13. Готовность
-    statuses = sorted(df["status"].dropna().unique()) if "status" in df else []
-    sel_status = st.multiselect("Статус", statuses, default=statuses)
+    if "status" in df.columns:
+        statuses = sorted(df["status"].dropna().unique().tolist())
+        sel_status = st.multiselect("Статус", statuses, default=statuses)
+    else:
+        sel_status = []
 
-    # 14. Отделка
-    finishes = sorted(df["decoration"].dropna().unique()) if "decoration" in df else []
-    sel_finish = st.multiselect("Отделка", finishes, default=[])
+    if "decoration" in df.columns:
+        finishes = sorted(df["decoration"].dropna().unique().tolist())
+        sel_finish = st.multiselect("Отделка", finishes, default=[])
+    else:
+        sel_finish = []
 
-    # 15. Ипотека
     only_mortgage = st.checkbox("Только со льготной ипотекой", value=False)
-
-    # 16. Только с координатами
     only_geo = st.checkbox("Только с координатами на карте", value=True)
 
-# ---------- Применение фильтров ----------
+
 f = df.copy()
-f = f[f["city"].isin(sel_cities)]
-f = f[f["source"].isin(sel_sources)]
+
+if sel_cities:
+    f = f[f["city"].isin(sel_cities)]
+if sel_sources:
+    f = f[f["source"].isin(sel_sources)]
 if sel_devs:
     f = f[f["developer"].isin(sel_devs)]
 if sel_classes:
     f = f[f["complex_class"].isin(sel_classes)]
-f = f[f["rooms"].isin(sel_rooms)]
-f = f[f["price_mln"].between(*price_range)]
-f = f[f["price_per_sqm"].between(*sqm_range) | f["price_per_sqm"].isna()]
-f = f[f["total_area"].between(*area_range) | f["total_area"].isna()]
-f = f[f["floor"].between(*floor_range) | f["floor"].isna()]
-f = f[f["total_floors"].between(*tf_range) | f["total_floors"].isna()]
-f = f[(f["metro_distance_min"] <= metro_max) | f["metro_distance_min"].isna()]
-f = f[f["completion_year"].between(*year_range) | f["completion_year"].isna()]
+if sel_rooms:
+    f = f[f["rooms"].isin(sel_rooms)]
+
+if price_range is not None:
+    f = f[f["price_mln"].between(*price_range) | f["price_mln"].isna()]
+if sqm_range is not None:
+    f = f[f["price_per_sqm"].between(*sqm_range) | f["price_per_sqm"].isna()]
+if area_range is not None:
+    f = f[f["total_area"].between(*area_range) | f["total_area"].isna()]
+if floor_range is not None:
+    f = f[f["floor"].between(*floor_range) | f["floor"].isna()]
+if tf_range is not None:
+    f = f[f["total_floors"].between(*tf_range) | f["total_floors"].isna()]
+if metro_max is not None:
+    f = f[(f["metro_distance_min"] <= metro_max) | f["metro_distance_min"].isna()]
+if year_range is not None:
+    f = f[f["completion_year"].between(*year_range) | f["completion_year"].isna()]
+
 if sel_status:
     f = f[f["status"].isin(sel_status)]
 if sel_finish:
     f = f[f["decoration"].isin(sel_finish)]
-if only_mortgage:
+if only_mortgage and "mortgage_allowed" in f.columns:
     f = f[f["mortgage_allowed"] == True]
 if only_geo:
     f = f[f["lat"].notna() & f["lon"].notna()]
 
 st.markdown(f"### Найдено: **{len(f)}** из {len(df)} ЖК")
 
-# ---------- Метрики ----------
+
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("ЖК", len(f))
-c2.metric("Ср. цена, млн ₽", f"{f['price_mln'].mean():.2f}" if len(f) else "—")
-c3.metric("Ср. ₽/м²", f"{int(f['price_per_sqm'].mean()):,}".replace(",", " ") if len(f) else "—")
-c4.metric("Ср. до метро, мин", f"{f['metro_distance_min'].mean():.1f}" if len(f) else "—")
 
-# ---------- Карта + таблица в табах ----------
-tab_map, tab_table, tab_compare, tab_stats = st.tabs(
-    ["🗺 Карта", "📋 Таблица", "⚖️ Сравнение", "📊 Аналитика"]
-)
+if len(f) and f["price_mln"].notna().any():
+    c2.metric("Ср. цена, млн ₽", f"{f['price_mln'].mean():.2f}")
+else:
+    c2.metric("Ср. цена, млн ₽", "—")
+
+if len(f) and f["price_per_sqm"].notna().any():
+    c3.metric("Ср. ₽/м²", f"{int(f['price_per_sqm'].mean()):,}".replace(",", " "))
+else:
+    c3.metric("Ср. ₽/м²", "—")
+
+if len(f) and f["metro_distance_min"].notna().any():
+    c4.metric("Ср. до метро, мин", f"{f['metro_distance_min'].mean():.1f}")
+else:
+    c4.metric("Ср. до метро, мин", "—")
+
+
+tab_map, tab_table, tab_stats = st.tabs(["🗺 Карта", "📋 Таблица", "📊 Аналитика"])
+
 
 with tab_map:
     if len(f) == 0:
-        st.warning("Нет объектов под фильтры")
+        st.warning("Нет объектов под текущие фильтры")
     else:
         center = [f["lat"].mean(), f["lon"].mean()]
         m = folium.Map(location=center, zoom_start=10, tiles="OpenStreetMap")
-
-        # Кластеры точек
         cluster = MarkerCluster().add_to(m)
 
-        colors = {"business": "green", "comfort": "blue", "elite": "red",
-                  "эконом": "gray", "комфорт": "blue", "бизнес": "green", "элит": "red"}
+        colors = {
+            "business": "green", "comfort": "blue", "elite": "red",
+            "эконом": "gray", "комфорт": "blue",
+            "бизнес": "green", "элит": "red",
+        }
 
         for _, r in f.iterrows():
-            color = colors.get(str(r.get("complex_class", "")).lower(), "purple")
-            popup = folium.Popup(
-                f"<b>{r.get('complex_name','—')}</b><br>"
-                f"Застройщик: {r.get('developer','—')}<br>"
-                f"Класс: {r.get('complex_class','—')}<br>"
-                f"Цена: {r.get('price_mln', 0):.2f} млн ₽<br>"
-                f"₽/м²: {int(r.get('price_per_sqm', 0) or 0):,}<br>".replace(",", " ") +
+            cls = str(r.get("complex_class", "")).lower()
+            color = colors.get(cls, "purple")
+
+            price_mln = r.get("price_mln", 0)
+            price_str = f"{price_mln:.2f} млн ₽" if pd.notna(price_mln) else "—"
+
+            sqm = r.get("price_per_sqm", 0)
+            sqm_str = f"{int(sqm):,}".replace(",", " ") if pd.notna(sqm) else "—"
+
+            popup_html = (
+                f"<b>{r.get('complex_name', '—')}</b><br>"
+                f"Застройщик: {r.get('developer', '—')}<br>"
+                f"Класс: {r.get('complex_class', '—')}<br>"
+                f"Цена: {price_str}<br>"
+                f"₽/м²: {sqm_str}<br>"
                 f"{r.get('rooms', '—')} комн · {r.get('total_area', '—')} м²<br>"
-                f"Метро: {r.get('metro_station','—')} ({r.get('metro_distance_min','—')} мин)<br>"
-                f"Сдача: {r.get('completion_year','—')}<br>"
-                f"<a href='{r.get('url','#')}' target='_blank'>Открыть источник</a>",
-                max_width=300,
+                f"Метро: {r.get('metro_station', '—')} "
+                f"({r.get('metro_distance_min', '—')} мин)<br>"
+                f"Сдача: {r.get('completion_year', '—')}<br>"
+                f"<a href='{r.get('url', '#')}' target='_blank'>Открыть источник</a>"
             )
+
             folium.CircleMarker(
                 [r["lat"], r["lon"]],
-                radius=7, color=color, fill=True, fill_opacity=0.85, weight=1,
-                popup=popup,
+                radius=7,
+                color=color,
+                fill=True,
+                fill_opacity=0.85,
+                weight=1,
+                popup=folium.Popup(popup_html, max_width=300),
             ).add_to(cluster)
 
-        # Легенда
         legend = """
-        <div style="position:fixed;bottom:30px;left:30px;z-index:9999;background:white;
-        padding:10px;border:1px solid #999;border-radius:6px;font-size:12px">
-        <b>Класс:</b><br>🟢 бизнес &nbsp; 🔵 комфорт &nbsp; 🔴 элит &nbsp; ⚪ эконом
+        <div style="position:fixed;bottom:30px;left:30px;z-index:9999;
+        background:white;padding:10px;border:1px solid #999;
+        border-radius:6px;font-size:12px">
+        <b>Класс:</b><br>
+        🟢 бизнес &nbsp; 🔵 комфорт &nbsp; 🔴 элит &nbsp; ⚪ эконом
         </div>
         """
         m.get_root().html.add_child(folium.Element(legend))
         st_folium(m, height=650, use_container_width=True)
 
-with tab_table:
-    st.dataframe(
-        f[["complex_name", "developer", "complex_class", "city", "district",
-           "rooms", "total_area", "floor", "total_floors", "price_mln",
-           "price_per_sqm", "metro_station", "metro_distance_min",
-           "completion_year", "status", "source", "url"]],
-        use_container_width=True, height=600,
-    )
-    st.download_button("📥 Скачать CSV",
-                       f.to_csv(index=False).encode("utf-8"),
-                       "filtered.csv", "text/csv")
 
-with tab_compare:
-    if len(f) < 2:
-        st.info("Выбери минимум 2 ЖК для сравнения")
+with tab_table:
+    show_cols = [
+        "complex_name", "developer", "complex_class", "city", "district",
+        "rooms", "total_area", "floor", "total_floors",
+        "price_mln", "price_per_sqm",
+        "metro_station", "metro_distance_min",
+        "completion_year", "status", "source", "url",
+    ]
+    show_cols = [c for c in show_cols if c in f.columns]
+
+    if len(f) == 0:
+        st.info("Нет данных")
     else:
-        names = f["complex_name"].dropna().unique().tolist()
-        picks = st.multiselect("Выбери ЖК", names, default=names[:3], max_selections=5)
-        cmp = f[f["complex_name"].isin(picks)].set_index("complex_name")
-        st.dataframe(cmp.T, use_container_width=True)
+        table = f[show_cols].copy()
+        table = table.loc[:, ~table.columns.duplicated()]
+
+        st.dataframe(table, use_container_width=True, height=600)
+
+        st.download_button(
+            "📥 Скачать CSV",
+            table.to_csv(index=False).encode("utf-8"),
+            "filtered.csv",
+            "text/csv",
+        )
+
 
 with tab_stats:
     if len(f) == 0:
-        st.warning("Нет данных")
+        st.warning("Нет данных для аналитики")
     else:
-        import plotly.express as px
-        # Распределение цен
-        st.subheader("Распределение цен, млн ₽")
-        st.plotly_chart(px.histogram(f, x="price_mln", nbins=30), use_container_width=True)
+        if f["price_mln"].notna().any():
+            st.subheader("Распределение цен, млн ₽")
+            st.plotly_chart(
+                px.histogram(f.dropna(subset=["price_mln"]), x="price_mln", nbins=30),
+                use_container_width=True,
+            )
 
-        # Цена по классу
-        st.subheader("Цена за м² по классу")
-        st.plotly_chart(
-            px.box(f.dropna(subset=["price_per_sqm", "complex_class"]),
-                   x="complex_class", y="price_per_sqm"),
-            use_container_width=True,
-        )
+        if "complex_class" in f.columns and f["price_per_sqm"].notna().any():
+            box_df = f.dropna(subset=["price_per_sqm", "complex_class"])
+            if len(box_df) > 0:
+                st.subheader("Цена за м² по классу")
+                st.plotly_chart(
+                    px.box(box_df, x="complex_class", y="price_per_sqm"),
+                    use_container_width=True,
+                )
 
-        # Средняя цена по округам
-        if "okrug" in f and f["okrug"].notna().any():
+        if "okrug" in f.columns and f["okrug"].notna().any() and f["price_per_sqm"].notna().any():
             st.subheader("Средняя цена за м² по округам")
-            grp = f.groupby("okrug")["price_per_sqm"].mean().sort_values(ascending=False).head(15)
-            st.bar_chart(grp)
+            grp = (
+                f.dropna(subset=["okrug", "price_per_sqm"])
+                .groupby("okrug")["price_per_sqm"]
+                .mean()
+                .sort_values(ascending=False)
+                .head(15)
+            )
+            if len(grp) > 0:
+                st.bar_chart(grp)
 
-        # Топ застройщиков
-        if "developer" in f:
+        if "developer" in f.columns and f["developer"].notna().any():
             st.subheader("Топ застройщиков по числу ЖК")
-            st.bar_chart(f["developer"].value_counts().head(15))
+            top_dev = f["developer"].value_counts().head(15)
+            if len(top_dev) > 0:
+                st.bar_chart(top_dev)
+
+        if "completion_year" in f.columns and f["completion_year"].notna().any():
+            st.subheader("Распределение по годам сдачи")
+            yc = f["completion_year"].value_counts().sort_index()
+            st.bar_chart(yc)
