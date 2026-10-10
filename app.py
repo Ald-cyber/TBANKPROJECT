@@ -153,6 +153,14 @@ def fmt_metro(row):
     return f"{name} · {int(dist)} мин"
 
 
+# --- Глобальный максимум по метро для определения активности фильтра ---
+METRO_MAX_REAL = (
+    int(np.nanmax(df["metro_distance_min"]))
+    if "metro_distance_min" in df.columns and df["metro_distance_min"].notna().any()
+    else 999
+)
+
+
 with st.sidebar:
     st.header("🔍 Фильтры")
     st.button("♻️ Сбросить фильтры", on_click=reset_filters, use_container_width=True)
@@ -233,7 +241,7 @@ with st.sidebar:
 
     st.markdown("**До метро, мин**")
     if "metro_distance_min" in df.columns and df["metro_distance_min"].notna().any():
-        m_max_real = int(np.nanmax(df["metro_distance_min"]))
+        m_max_real = METRO_MAX_REAL
         col_m1, col_m2 = st.columns(2)
         metro_from = col_m1.number_input(
             "от  ", min_value=0,
@@ -246,6 +254,7 @@ with st.sidebar:
             step=1, key="flt_metro_to", label_visibility="collapsed",
         )
         st.caption("от / до")
+        st.caption("⚠️ При сужении диапазона объекты без метро скрываются")
     else:
         metro_from, metro_to = 0, 999
 
@@ -289,11 +298,25 @@ if "floor" in f.columns:
     f = f[(f["floor"].between(floor_from, floor_to)) | f["floor"].isna()]
 if "total_area" in f.columns and area_from > 0:
     f = f[(f["total_area"] >= area_from) | f["total_area"].isna()]
+
+# --- Фильтр по метро: объекты без метро исключаются, если фильтр активен ---
 if "metro_distance_min" in f.columns:
-    f = f[
-        (f["metro_distance_min"].between(metro_from, metro_to)) |
-        f["metro_distance_min"].isna()
-    ]
+    m_max_real = METRO_MAX_REAL
+    metro_filter_active = (metro_from > 0) or (metro_to < m_max_real)
+
+    if metro_filter_active:
+        # Пользователь сузил диапазон — объекты без метро (NaN) исключаем
+        f = f[
+            f["metro_distance_min"].notna() &
+            f["metro_distance_min"].between(metro_from, metro_to)
+        ]
+    else:
+        # Фильтр не задан — показываем всё, включая объекты без метро
+        f = f[
+            f["metro_distance_min"].between(metro_from, metro_to) |
+            f["metro_distance_min"].isna()
+        ]
+
 if only_mortgage and "mortgage_allowed" in f.columns:
     f = f[f["mortgage_allowed"] == True]
 
