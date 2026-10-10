@@ -387,10 +387,6 @@ def render_card(row, key_prefix, full=False, show_open_button=True):
             toggle_fav(zhk_id)
             st.rerun()
 
-        if not full and show_open_button:
-            if st.button("📄 Карточка", key=f"{key_prefix}_open_{zhk_id}"):
-                open_card(zhk_id)
-                st.rerun()
 
 
 tab_cards, tab_map, tab_card, tab_fav, tab_stats = st.tabs(
