@@ -370,12 +370,11 @@ def render_card(row, key_prefix, full=False, show_open_button=True):
                 st.rerun()
 
 
-tab_cards, tab_map, tab_card, tab_table, tab_fav, tab_stats = st.tabs(
+tab_cards, tab_map, tab_card, tab_fav, tab_stats = st.tabs(
     [
         "🏠 Карточки",
         "🗺 Карта",
         "📄 Карточка",
-        "📋 Таблица",
         f"❤ Избранное ({len(st.session_state.favorites)})",
         "📊 Аналитика",
     ]
@@ -506,30 +505,6 @@ with tab_card:
             if st.button("← Вернуться к списку"):
                 st.session_state.selected_zhk = None
                 st.rerun()
-
-
-with tab_table:
-    show_cols = [
-        "complex_name", "developer", "complex_class", "city", "district",
-        "rooms", "total_area", "floor", "total_floors",
-        "price_mln", "price_per_sqm",
-        "metro_station", "metro_distance_min",
-        "completion_year", "status", "source", "url",
-    ]
-    show_cols = [c for c in show_cols if c in f.columns]
-
-    if len(f) == 0:
-        st.info("Нет данных")
-    else:
-        table = f[show_cols].copy()
-        table = table.loc[:, ~table.columns.duplicated()]
-        st.dataframe(table, use_container_width=True, height=600)
-        st.download_button(
-            "📥 Скачать CSV",
-            table.to_csv(index=False).encode("utf-8"),
-            "filtered.csv",
-            "text/csv",
-        )
 
 
 with tab_fav:
